@@ -1190,8 +1190,8 @@ function escapeHTML(str) {
 // ============================================================================
 // 13. BULUT SENKRONİZASYON MOTORU (CİHAZLAR ARASI OTOMATİK EŞİTLEME)
 // ============================================================================
-// DİKKAT: Aşağıdaki tırnak içine kendi Firebase Realtime Database linkini yapıştır (sonunda / olmasın)
-const FIREBASE_URL = "https://goss-sinav-bulut-default-rtdb.firebaseio.com/";
+// DİKKAT: Sonunda kesinlikle "/" olmamalıdır
+const FIREBASE_URL = "https://goss-sinav-bulut-default-rtdb.firebaseio.com";
 
 function getOrCreateSyncCode() {
   let code = localStorage.getItem("goss_sync_code");
@@ -1218,31 +1218,60 @@ async function initCloudSync() {
       const currentCode = getOrCreateSyncCode();
       const input = prompt(
         `Sizin Cihaz Eşleme Kodunuz: ${currentCode}\n\n` +
-        `Başka bir cihazdaki (Telefon/PC) ilerlemenizi buraya aktarmak için o cihazdaki kodu aşağıya yazın:`,
+        `Başka bir cihazdaki ilerlemenizi buraya aktarmak için o cihazdaki kodu yazın:`,
         currentCode
       );
 
       if (!input) return;
       const cleanCode = input.trim().toUpperCase();
-      if (cleanCode === currentCode) {
-        await pullFromCloud(currentCode, true);
-      } else {
-        localStorage.setItem("goss_sync_code", cleanCode);
-        if (displayEl) displayEl.textContent = cleanCode;
-        await pullFromCloud(cleanCode, true);
-      }
+      localStorage.setItem("goss_sync_code", cleanCode);
+      if (displayEl) displayEl.textContent = cleanCode;
+      await pullFromCloud(cleanCode, true);
     });
   }
 
-  // Sayfa açıldığında buluttaki güncel veriyi sessizce çek
+  // Sayfa açılışında buluttan en güncel veriyi çek
   await pullFromCloud(code, false);
+}
+
+async function pushToCloud() {
+  if (!FIREBASE_URL || FIREBASE_URL.includes("SENIN-PROJEN")) return;
+  const code = getOrCreateSyncCode();
+
+  const payload = {
+    updatedAt: Date.now(),
+    examHistory: loadExamHistory(),
+    coursesState: {}
+  };
+
+  if (appData && appData.courses) {
+    appData.courses.forEach((c) => {
+      const state = loadCourseState(c.id);
+      payload.coursesState[c.id] = {
+        ...state,
+        _syncedAt: Date.now() // Sıfırlamalarda Firebase objeyi silmesin diye zaman damgası
+      };
+    });
+  }
+
+  try {
+    const cleanUrl = FIREBASE_URL.replace(/\/+$/, ""); // Olası fazlalık slash'ları temizler
+    await fetch(`${cleanUrl}/users/${code}.json`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+  } catch (err) {
+    console.warn("Buluta gönderilemedi:", err);
+  }
 }
 
 async function pullFromCloud(code, showNotification = false) {
   if (!FIREBASE_URL || FIREBASE_URL.includes("SENIN-PROJEN")) return;
 
   try {
-    const res = await fetch(`${FIREBASE_URL}/users/${code}.json`);
+    const cleanUrl = FIREBASE_URL.replace(/\/+$/, "");
+    const res = await fetch(`${cleanUrl}/users/${code}.json`);
     if (!res.ok) return;
     const cloudData = await res.json();
 
@@ -1250,9 +1279,11 @@ async function pullFromCloud(code, showNotification = false) {
       if (appData && appData.courses) {
         appData.courses.forEach((c) => {
           const courseKey = getCourseStateKey(c.id);
-          // Eğer derse ait bulut verisi varsa yaz, yoksa veya sıfırlandıysa PC'de de temizle
-          if (cloudData.coursesState && cloudData.coursesState[c.id]) {
-            localStorage.setItem(courseKey, JSON.stringify(cloudData.coursesState[c.id]));
+          const remoteCourse = cloudData.coursesState ? cloudData.coursesState[c.id] : null;
+
+          // Eğer derse ait soru/cevap kalmamışsa veya sıfırlandıysa PC'de de temizle
+          if (remoteCourse && remoteCourse.status && Object.keys(remoteCourse.status).length > 0) {
+            localStorage.setItem(courseKey, JSON.stringify(remoteCourse));
           } else {
             localStorage.removeItem(courseKey);
           }
@@ -1265,13 +1296,11 @@ async function pullFromCloud(code, showNotification = false) {
         localStorage.removeItem("goss_exam_history_v2");
       }
 
+      refreshActiveScreen();
+
       if (showNotification) {
-        refreshActiveScreen();
-        alert(`"${code}" kodlu profilin tüm verileri başarıyla senkronize edildi!`);
+        alert(`"${code}" kodlu profil başarıyla eşitlendi!`);
       }
-    } else if (showNotification) {
-      await pushToCloud();
-      alert(`"${code}" kodu buluta tanımlandı.`);
     }
   } catch (err) {
     if (showNotification) alert("İnternet bağlantısı kurulamadı.");
