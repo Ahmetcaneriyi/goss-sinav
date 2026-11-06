@@ -935,8 +935,15 @@ function resetActiveTestOnly() {
 function resetEntireCourse() {
   const course = getCourseById(currentCourseId);
   if (!confirm(`DİKKAT: "${course.name}" dersine ait tüm doğrular, hatalar, incelenenler ve yıldızlar tamamen sıfırlanacak. Emin misiniz?`)) return;
+  
+  // Yerel hafızayı temizle
   localStorage.removeItem(getCourseStateKey(currentCourseId));
-  pushToCloud(); // Sınav bittiğinde sonucu buluta yedekler
+  
+  // Sıfırlamayı anında buluta bildir
+  if (typeof pushToCloud === "function") {
+    pushToCloud();
+  }
+  
   refreshActiveScreen();
 }
 
@@ -1231,33 +1238,6 @@ async function initCloudSync() {
   await pullFromCloud(code, false);
 }
 
-async function pushToCloud() {
-  if (!FIREBASE_URL || FIREBASE_URL.includes("SENIN-PROJEN")) return;
-  const code = getOrCreateSyncCode();
-
-  const payload = {
-    updatedAt: Date.now(),
-    examHistory: loadExamHistory(),
-    coursesState: {}
-  };
-
-  if (appData && appData.courses) {
-    appData.courses.forEach((c) => {
-      payload.coursesState[c.id] = loadCourseState(c.id);
-    });
-  }
-
-  try {
-    await fetch(`${FIREBASE_URL}/users/${code}.json`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
-  } catch (err) {
-    console.warn("Buluta yedeklenemedi (Çevrimdışı olabilirsiniz):", err);
-  }
-}
-
 async function pullFromCloud(code, showNotification = false) {
   if (!FIREBASE_URL || FIREBASE_URL.includes("SENIN-PROJEN")) return;
 
@@ -1267,25 +1247,31 @@ async function pullFromCloud(code, showNotification = false) {
     const cloudData = await res.json();
 
     if (cloudData) {
-      if (cloudData.coursesState) {
-        Object.keys(cloudData.coursesState).forEach((courseId) => {
-          localStorage.setItem(
-            getCourseStateKey(courseId),
-            JSON.stringify(cloudData.coursesState[courseId])
-          );
+      if (appData && appData.courses) {
+        appData.courses.forEach((c) => {
+          const courseKey = getCourseStateKey(c.id);
+          // Eğer derse ait bulut verisi varsa yaz, yoksa veya sıfırlandıysa PC'de de temizle
+          if (cloudData.coursesState && cloudData.coursesState[c.id]) {
+            localStorage.setItem(courseKey, JSON.stringify(cloudData.coursesState[c.id]));
+          } else {
+            localStorage.removeItem(courseKey);
+          }
         });
       }
+
       if (cloudData.examHistory) {
         localStorage.setItem("goss_exam_history_v2", JSON.stringify(cloudData.examHistory));
+      } else {
+        localStorage.removeItem("goss_exam_history_v2");
       }
+
       if (showNotification) {
         refreshActiveScreen();
-        alert(`"${code}" kodlu profilin tüm soru ve hata havuzu verileri başarıyla senkronize edildi!`);
+        alert(`"${code}" kodlu profilin tüm verileri başarıyla senkronize edildi!`);
       }
     } else if (showNotification) {
-      // Bulutta henüz veri yoksa mevcut cihazın verisini buluta gönder
       await pushToCloud();
-      alert(`"${code}" kodu buluta tanımlandı. Artık diğer cihazlarınızdan bu kodu girerek eşitlenebilirsiniz.`);
+      alert(`"${code}" kodu buluta tanımlandı.`);
     }
   } catch (err) {
     if (showNotification) alert("İnternet bağlantısı kurulamadı.");
